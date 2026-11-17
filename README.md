@@ -1,53 +1,101 @@
-# ClipPort — single FastAPI app for Vercel
+# ClipPort — Vercel frontend + Render Docker backend
 
-This package is a fresh replacement for the previous broken FastAPI/Vercel configurations.
+This is a **two-service project**, built to avoid the failures caused by running yt-dlp and media processing in Vercel Functions.
 
-## Important: why this layout works
+```
+clipport-vercel-render/
+├── frontend/                 # Static UI for Vercel
+│   ├── index.html
+│   ├── styles.css
+│   ├── app.js
+│   ├── config.js             # Update this after Render deployment
+│   └── favicon.svg
+└── backend/                  # Docker API for Render
+    ├── Dockerfile            # Installs Deno, FFmpeg and Python dependencies
+    ├── requirements.txt      # Includes yt-dlp[default] / yt-dlp-ejs
+    ├── app.py                # FastAPI yt-dlp backend
+    └── tests/
+```
 
-Vercel's current FastAPI preset finds the root **`app.py`** module and its top-level **`app = FastAPI()`** instance. It routes **every request** to that ASGI app. That app explicitly handles **`/`**, **`/api/health`**, **`/api/info`**, **`/api/download`**, and serves local assets at **`/static/*`**.
+## 1. GitHub upload
 
-**Do NOT add `vercel.json`, `pyproject.toml`, or an `api/` folder from earlier attempts.** There are no rewrites, alternate Python handlers, or static-build settings in this project.
+1. Extract the ZIP file.
+2. Open your repository: `https://github.com/malinduchethiya/videodownload`.
+3. Remove the **old Python/FastAPI deployment files** in the repository root, including `app.py`, `pyproject.toml`, `vercel.json` and any `api/` directory. **Replace them with the contents of this ZIP.**
+4. The GitHub repository root must contain `frontend/`, `backend/`, and `README.md`. Do not upload an extra outer folder.
+5. Commit the changes.
 
-## Deploy to GitHub and Vercel
+## 2. Deploy backend on Render (first)
 
-1. **Delete all old files** in your GitHub repository, including any old `api/` or `api-disabled/` folder, `pyproject.toml`, `vercel.json`, and old `index.html`.
-2. Unzip this package. Upload the **contents** directly to the repository root. `app.py` and `requirements.txt` must be at the root and the `static/` folder must contain its three files.
-3. In Vercel, import the repository or let your existing Git-connected project redeploy. Set **Root Directory** to `./`. Set **Framework Preset** to FastAPI (or leave it as Auto if auto-detected). Leave **Build Command** and **Output Directory** **unset**; disable any old custom settings.
-4. Once deployed, test `https://YOUR-DEPLOYMENT.vercel.app/api/health`. You should get `{"status":"ok", ...}`.
-5. Open `https://YOUR-DEPLOYMENT.vercel.app/`. It should serve the HTML UI.
-6. Test with a **public YouTube video you are authorized to download**.
+1. Go to <https://dashboard.render.com>.
+2. Select **New > Web Service**; connect GitHub, select your `videodownload` repo.
+3. Choose **Language: Docker**.
+4. Set **Root Directory** to `backend`. Render should discover `backend/Dockerfile` inside that root. If necessary set Dockerfile Path to `./Dockerfile` (path is relative to the root directory).
+5. Choose **Free** for small-scale testing, if offered. Free services sleep and do not provide persistent storage.
+6. Add environment variable `FRONTEND_ORIGIN` with the EXACT origin of your Vercel site (e.g., `https://your-site.vercel.app`, no slash at the end). If you don't know it yet, leave unset temporarily (allows any origin) and add it after Vercel is deployed.
+7. Leave Docker start command unset so Dockerfile's `CMD` controls startup.
+8. Deploy. Render provides an HTTPS URL such as `https://clipport-api.onrender.com` (example only).
+9. Visit `https://YOUR-RENDER-SERVICE.onrender.com/api/health`. The expected fields are `"status":"ok"`, `"deno":true`, `"ffmpeg":true` and the installed yt-dlp version.
 
-If `/api/health` fails, find **Vercel Dashboard > Project > Logs > Runtime logs** and inspect the Python traceback.
+> If Docker build fails, check Render's **Deploy** logs. If health works but YouTube extraction fails, check **Logs**. YouTube may block data-center IP addresses even when Deno and FFmpeg are installed.
 
-## Local development
+## 3. Connect your frontend to Render
 
-Python 3.12+ recommended:
+Open `frontend/config.js` in GitHub and replace the placeholder with the **actual** Render URL:
+
+```js
+window.CLIPPORT_API_URL = "https://YOUR-REAL-RENDER-URL.onrender.com";
+```
+
+Commit the change.
+
+## 4. Deploy frontend to Vercel
+
+1. Open your existing Vercel project connected to this GitHub repository.
+2. **Settings > Build and Deployment:** change **Root Directory** to **`frontend`**.
+3. Set **Framework Preset: Other** (not FastAPI), and remove old custom build command, output directory, or Python entrypoint settings.
+4. Redeploy the latest commit using the project Deployment tab if needed.
+5. Visit `/` and you should see the ClipPort UI. It now calls the Render API instead of a Vercel Python function.
+6. In Render, set/update `FRONTEND_ORIGIN` to your exact final Vercel site origin and redeploy the backend. This avoids browser CORS errors.
+
+## 5. Test
+
+1. Open `https://YOUR-RENDER-URL.onrender.com/api/health` — confirm Deno and FFmpeg are `true`.
+2. Open the Vercel website — header should say `Downloader online` once Render wakes up.
+3. Paste an **individual public YouTube video URL that you are authorized to download**.
+4. Select an offered MP4 quality, then download. The backend temporarily writes a file and delivers it to the browser, then deletes the temporary directory.
+5. If the site says `YouTube blocked extraction`, inspect Render runtime logs. The absence of YouTube access from that server is not a Vercel bug.
+
+## Limits and operational cautions
+
+- **Not guaranteed to work for all YouTube videos:** YouTube may restrict Render's outbound IP addresses, require a login, or change its extraction challenges.
+- **Free Render** may spin down after 15 idle minutes and take ~1 minute to wake. Downloading big files can time out, run out of disk/memory, or exhaust bandwidth.
+- Demo defaults: **20-minute max duration**, **120 MB max final MP4**, **one download at a time** and basic request rate limiting. These are not a replacement for authentication, per-user quotas, abuse controls, or distributed job queues.
+- This does **not** use cookies or bypass private video access. Follow platform terms and download only authorized content.
+- Deno installed from official `denoland/deno:bin-2.9.8`; yt-dlp-ejs installed with `yt-dlp[default]`; FFmpeg installed through apt. Docker builds need Docker Hub and PyPI access.
+- If you want high traffic or 4K, switch to a paid dedicated host, a job queue, temporary object storage and expiring download URLs; don't keep long-running downloads in a free web request.
+
+## Optional local tests (Python)
 
 ```sh
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
+cd backend
+pip install -r requirements.txt pytest httpx
+pytest -q
 uvicorn app:app --reload
 ```
 
-Visit `http://127.0.0.1:8000/` and `http://127.0.0.1:8000/api/health`.
+For local development, install Deno and FFmpeg separately (Docker builds install them for the hosted app).
 
-## What works and what doesn't
+## Troubleshooting guide
 
-- The homepage and health route work without connecting to YouTube.
-- The app uses `yt-dlp` to inspect **single** public YouTube videos.
-- When a **precombined MP4** is available, the download endpoint opens the upstream stream and forwards it with `Content-Disposition: attachment` so the browser can save it. Data is streamed without storing it in the Vercel filesystem.
-- This demo has a **maximum 80 MB file** safeguard. Uncertain file sizes may be rejected or streams cut off at that limit. Vercel function timeouts and bandwidth can also stop downloads.
-- It **cannot merge** separate high-resolution video and audio streams; there is **no FFmpeg** on Vercel.
-- **YouTube can block cloud IPs**, require login, and impose JavaScript challenges. Since November 2025, full YouTube support in yt-dlp relies on a JS runtime like Deno and the EJS scripts. Vercel's Python runtime does **not** guarantee a compatible JS executable. Therefore video extraction may fail even though the deployment and health route work correctly. Installing `yt-dlp[default]` alone does not supply a JS runtime binary.
-- For reliable downloads, use `yt-dlp` on your own PC or run it on a separate backend with a JS runtime, FFmpeg, and adequate bandwidth.
-- This is a **learning/demo project**, not a production-ready public downloading service. Add authentication, quotas, rate limiting, and abuse protection before opening it broadly.
-
-## Security
-
-Only HTTPS video IDs on specified YouTube domains are accepted and canonicalized. The server will fetch only `*.googlevideo.com` upstream MP4 URLs provided by yt-dlp (no general-purpose proxy). No cookies, credentials, or private videos are supported. Use only for media you have the right to download and comply with applicable service terms.
-
-## Tests
-
-`python -m pytest tests -q` (after installing `pytest`). Tests mock video info; no network or YouTube credentials are needed.
+| Symptom | What to check |
+| --- | --- |
+| UI displays but "Set API URL" | `frontend/config.js` still has placeholder |
+| Vercel responds 404 | Set Vercel Root Directory to `frontend`, preset Other |
+| Backend health 404 | Set Render Root Directory to `backend`, select Docker |
+| CORS error in browser | Set Render `FRONTEND_ORIGIN` to the exact Vercel HTTPS origin, without slash |
+| `"deno":false` or `"ffmpeg":false` | Render service not using the provided `backend/Dockerfile` |
+| YouTube extraction fails | Check Render logs; source may block cloud IP, video may be unavailable |
+| HTTP 429 | Demo concurrency/rate limit reached; try later |
+| HTTP 413 | Video longer than 20 minutes or exceeds file-size limit |
+| Download stalls | Render free sleep/limits, huge file, or upstream failure |
