@@ -5,10 +5,12 @@ import yt_dlp
 
 app = FastAPI()
 
+@app.get('/health')
 @app.get('/api/health')
 def health():
     return {'status': 'ok'}
 
+@app.get('/info')
 @app.get('/api/info')
 def info(url: str):
     parsed = urlparse(url)
